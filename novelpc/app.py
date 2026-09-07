@@ -42,8 +42,28 @@ if razorpay_client is None:
 
 with app.app_context():
     db.create_all()
-    seed_components()
 
+    from sqlalchemy import text
+
+    columns = db.session.execute(
+        text("PRAGMA table_info(build)")
+    ).fetchall()
+
+    column_names = [column[1] for column in columns]
+
+    if 'razorpay_order_id' not in column_names:
+        db.session.execute(
+            text("ALTER TABLE build ADD COLUMN razorpay_order_id VARCHAR(255)")
+        )
+
+    if 'razorpay_payment_id' not in column_names:
+        db.session.execute(
+            text("ALTER TABLE build ADD COLUMN razorpay_payment_id VARCHAR(255)")
+        )
+
+    db.session.commit()
+
+    seed_components()
 # ─── Decorators ────────────────────────────────────────────────────────────
 def login_required(f):
     @wraps(f)
