@@ -4,3 +4,4 @@ venv/
 instance/ 
 *.pyc 
 static/uploads/ 
+.env
