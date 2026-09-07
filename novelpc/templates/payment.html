@@ -74,27 +74,8 @@
     {% else %}
       <div class="payment-form-box">
         <h2>💳 Payment</h2>
-        <p>This is a simulated payment for the college project demo. No real money is charged.</p>
+        <p>Secure checkout powered by Razorpay — pay with UPI/GPay, cards, or netbanking.</p>
 
-        <div class="payment-method-select">
-          <label class="pm-option active" onclick="selectPaymentMethod(this, 'card')">
-            <input type="radio" name="pm" checked> 💳 Credit / Debit Card
-          </label>
-          <label class="pm-option" onclick="selectPaymentMethod(this, 'upi')">
-            <input type="radio" name="pm"> 📱 UPI
-          </label>
-        </div>
-
-        <div id="card-fields" class="payment-fields">
-          <div class="form-group"><label>Card Number *</label><input type="text" id="card-number" placeholder="4242 4242 4242 4242" maxlength="19" inputmode="numeric" autocomplete="cc-number" oninput="formatCardNumber(this)"></div>
-          <div class="form-group-row">
-            <div class="form-group"><label>Expiry *</label><input type="text" id="card-expiry" placeholder="MM/YY" maxlength="5" inputmode="numeric" autocomplete="cc-exp" oninput="formatCardExpiry(this)"></div>
-            <div class="form-group"><label>CVV *</label><input type="password" id="card-cvv" placeholder="123" maxlength="3" inputmode="numeric" autocomplete="cc-csc" oninput="formatCardCvv(this)"></div>
-          </div>
-        </div>
-        <div id="upi-fields" class="payment-fields hidden">
-          <div class="form-group"><label>UPI ID *</label><input type="text" id="upi-id" placeholder="yourname@upi"></div>
-        </div>
         <p id="payment-error" class="payment-error hidden"></p>
 
         <div class="payment-detail">
@@ -126,10 +107,10 @@
   </div>
 </div>
 
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
 <script>
 const BASE_TOTAL = {{ build.total_price }};
 let addonTotal = 0;
-let selectedMethod = 'card';
 
 function addAddon(label, price) {
   const textarea = document.getElementById('addon-description');
@@ -150,81 +131,22 @@ function updateAddonTotals() {
   if (btn) btn.textContent = '💳 Pay ₹' + grand.toLocaleString('en-IN');
 }
 
-function selectPaymentMethod(label, method) {
-  document.querySelectorAll('.pm-option').forEach(el => el.classList.remove('active'));
-  label.classList.add('active');
-  selectedMethod = method;
-  document.getElementById('card-fields').classList.toggle('hidden', method !== 'card');
-  document.getElementById('upi-fields').classList.toggle('hidden', method !== 'upi');
-}
-
-// Auto-format card number: digits only, max 16, grouped in 4s with spaces (e.g. 4242 4242 4242 4242)
-function formatCardNumber(input) {
-  let digits = input.value.replace(/\D/g, '').slice(0, 16);
-  let grouped = digits.match(/.{1,4}/g);
-  input.value = grouped ? grouped.join(' ') : '';
-}
-
-// Auto-format expiry: digits only, max 4 (MMYY), auto-insert "/" after the 2nd digit
-function formatCardExpiry(input) {
-  let digits = input.value.replace(/\D/g, '').slice(0, 4);
-  if (digits.length >= 3) {
-    input.value = digits.slice(0, 2) + '/' + digits.slice(2);
-  } else {
-    input.value = digits;
-  }
-}
-
-// Auto-format CVV: digits only, max 3
-function formatCardCvv(input) {
-  input.value = input.value.replace(/\D/g, '').slice(0, 3);
-}
-
-function validatePaymentFields() {
+function showPaymentError(message) {
   const errorEl = document.getElementById('payment-error');
-  errorEl.classList.add('hidden');
-  errorEl.textContent = '';
+  errorEl.textContent = '⚠️ ' + message;
+  errorEl.classList.remove('hidden');
+}
 
-  if (selectedMethod === 'card') {
-    const number = document.getElementById('card-number').value.trim();
-    const expiry = document.getElementById('card-expiry').value.trim();
-    const cvv = document.getElementById('card-cvv').value.trim();
-    if (!number || !expiry || !cvv) {
-      errorEl.textContent = '⚠️ Please fill in all card details (Card Number, Expiry, CVV) before placing the order.';
-      errorEl.classList.remove('hidden');
-      return false;
-    }
-    const digitsOnly = number.replace(/\s/g, '');
-    if (digitsOnly.length < 12) {
-      errorEl.textContent = '⚠️ Please enter a valid card number.';
-      errorEl.classList.remove('hidden');
-      return false;
-    }
-    if (!/^\d{2}\/\d{2}$/.test(expiry)) {
-      errorEl.textContent = '⚠️ Please enter expiry in MM/YY format.';
-      errorEl.classList.remove('hidden');
-      return false;
-    }
-    if (cvv.length < 3) {
-      errorEl.textContent = '⚠️ Please enter a valid 3-digit CVV.';
-      errorEl.classList.remove('hidden');
-      return false;
-    }
-  } else if (selectedMethod === 'upi') {
-    const upiId = document.getElementById('upi-id').value.trim();
-    if (!upiId || !upiId.includes('@')) {
-      errorEl.textContent = '⚠️ Please enter a valid UPI ID (e.g. yourname@upi) before placing the order.';
-      errorEl.classList.remove('hidden');
-      return false;
-    }
-  }
-  return true;
+function resetPayButton() {
+  const btn = document.getElementById('pay-btn');
+  btn.textContent = '💳 Pay ₹' + (BASE_TOTAL + addonTotal).toLocaleString('en-IN');
+  btn.disabled = false;
 }
 
 async function payFull(buildId) {
-  if (!validatePaymentFields()) {
-    return;
-  }
+  const errorEl = document.getElementById('payment-error');
+  errorEl.classList.add('hidden');
+  errorEl.textContent = '';
 
   const btn = document.getElementById('pay-btn');
   btn.textContent = 'Processing...';
@@ -238,31 +160,68 @@ async function payFull(buildId) {
   formData.append('extras_price', addonTotal);
   await fetch(`/payment/${buildId}`, { method: 'POST', body: formData });
 
-  const res = await fetch(`/payment/${buildId}/confirm`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      payment_method: selectedMethod,
-      card_number: document.getElementById('card-number') ? document.getElementById('card-number').value.trim() : '',
-      card_expiry: document.getElementById('card-expiry') ? document.getElementById('card-expiry').value.trim() : '',
-      card_cvv: document.getElementById('card-cvv') ? document.getElementById('card-cvv').value.trim() : '',
-      upi_id: document.getElementById('upi-id') ? document.getElementById('upi-id').value.trim() : ''
-    })
-  });
-  const data = await res.json();
-  if (data.success) {
-    if (data.delivery_date) {
-      document.getElementById('delivery-estimate-text').textContent =
-        `📅 Your order will be delivered by ${data.delivery_date}.`;
-    }
-    document.getElementById('order-overlay').classList.remove('hidden');
-  } else {
-    const errorEl = document.getElementById('payment-error');
-    errorEl.textContent = '⚠️ ' + (data.message || 'Something went wrong. Please try again.');
-    errorEl.classList.remove('hidden');
-    btn.textContent = '💳 Pay ₹' + (BASE_TOTAL + addonTotal).toLocaleString('en-IN');
-    btn.disabled = false;
+  // Ask our server to create a Razorpay order for the current total
+  let order;
+  try {
+    const orderRes = await fetch(`/payment/${buildId}/create-order`, { method: 'POST' });
+    order = await orderRes.json();
+  } catch (err) {
+    showPaymentError('Could not start payment. Please try again.');
+    resetPayButton();
+    return;
   }
+
+  if (!order.success) {
+    showPaymentError(order.message || 'Could not start payment. Please try again.');
+    resetPayButton();
+    return;
+  }
+
+  // Open Razorpay's Checkout widget — shows UPI/GPay, cards, netbanking, etc.
+  const rzp = new Razorpay({
+    key: order.key_id,
+    amount: order.amount,
+    currency: order.currency,
+    order_id: order.order_id,
+    name: 'NovelPC',
+    description: `Order for Build #${buildId}`,
+    handler: async function (response) {
+      // Send the payment details back to our server for signature verification
+      const res = await fetch(`/payment/${buildId}/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          razorpay_order_id: response.razorpay_order_id,
+          razorpay_payment_id: response.razorpay_payment_id,
+          razorpay_signature: response.razorpay_signature
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (data.delivery_date) {
+          document.getElementById('delivery-estimate-text').textContent =
+            `📅 Your order will be delivered by ${data.delivery_date}.`;
+        }
+        document.getElementById('order-overlay').classList.remove('hidden');
+      } else {
+        showPaymentError(data.message || 'Payment could not be verified. If money was deducted, it will be refunded automatically.');
+        resetPayButton();
+      }
+    },
+    modal: {
+      ondismiss: function () {
+        resetPayButton();
+      }
+    },
+    theme: { color: '#6c5ce7' }
+  });
+
+  rzp.on('payment.failed', function (response) {
+    showPaymentError(response.error.description || 'Payment failed. Please try again.');
+    resetPayButton();
+  });
+
+  rzp.open();
 }
 </script>
 {% endblock %}

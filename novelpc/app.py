@@ -4,12 +4,16 @@ from werkzeug.utils import secure_filename
 from functools import wraps
 import json, os, uuid, secrets
 from datetime import datetime, timedelta
+import razorpay
+from dotenv import load_dotenv
 
 from models import db, User, Component, Build, Ticket, PasswordReset, GuestVisit
 from compatibility import run_all_checks
 from seed_data import seed_components
 from recommender import recommend_build
 from invoice import generate_invoice_pdf
+
+load_dotenv()  # loads variables from a local .env file, if present (see .env.example)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'novelpc-secret-2024')
@@ -23,6 +27,18 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 db.init_app(app)
 
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'admin123')
+
+# ─── Razorpay ────────────────────────────────────────────────────────────
+# Keys are read from environment variables only — never hardcode them here.
+# See .env.example for where to put them locally.
+RAZORPAY_KEY_ID = os.environ.get('RAZORPAY_KEY_ID', '')
+RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET', '')
+razorpay_client = (
+    razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+    if RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET else None
+)
+if razorpay_client is None:
+    print('⚠️  Razorpay keys not set — payments will be disabled. See .env.example.')
 
 with app.app_context():
     db.create_all()
@@ -567,34 +583,74 @@ def payment(build_id):
     grand_total = build.total_price + (build.extras_price or 0)
     return render_template('payment.html', build=build, components=components, grand_total=grand_total)
 
-@app.route('/payment/<int:build_id>/confirm', methods=['POST'])
+@app.route('/payment/<int:build_id>/create-order', methods=['POST'])
 @login_required
-def confirm_payment(build_id):
+def create_razorpay_order(build_id):
+    """Creates a Razorpay Order for the build's current total. The frontend
+    opens the Razorpay Checkout widget (UPI/GPay/cards/netbanking) using the
+    returned order_id — no card details ever touch our server."""
     build = Build.query.get_or_404(build_id)
     if build.user_id != session['user_id']:
         return jsonify({'success': False, 'message': 'Unauthorized'}), 403
+    if not razorpay_client:
+        return jsonify({'success': False, 'message': 'Payments are not configured yet. Please contact support.'}), 503
+
+    grand_total = build.total_price + (build.extras_price or 0)
+    amount_paise = int(round(grand_total * 100))  # Razorpay amounts are in the smallest currency unit (paise)
+
+    order = razorpay_client.order.create({
+        'amount': amount_paise,
+        'currency': 'INR',
+        'receipt': f'build_{build.id}',
+        'notes': {'build_id': str(build.id), 'user_id': str(build.user_id)}
+    })
+
+    build.razorpay_order_id = order['id']
+    db.session.commit()
+
+    return jsonify({
+        'success': True,
+        'order_id': order['id'],
+        'amount': amount_paise,
+        'currency': 'INR',
+        'key_id': RAZORPAY_KEY_ID
+    })
+
+@app.route('/payment/<int:build_id>/confirm', methods=['POST'])
+@login_required
+def confirm_payment(build_id):
+    """Verifies the Razorpay payment signature server-side before marking the
+    order as placed. This is the step that actually proves the payment is
+    genuine — never trust a 'success' claim from the browser alone."""
+    build = Build.query.get_or_404(build_id)
+    if build.user_id != session['user_id']:
+        return jsonify({'success': False, 'message': 'Unauthorized'}), 403
+    if not razorpay_client:
+        return jsonify({'success': False, 'message': 'Payments are not configured yet. Please contact support.'}), 503
+
     data = request.get_json() or {}
-    method = data.get('payment_method', 'card')
+    razorpay_order_id = (data.get('razorpay_order_id') or '').strip()
+    razorpay_payment_id = (data.get('razorpay_payment_id') or '').strip()
+    razorpay_signature = (data.get('razorpay_signature') or '').strip()
 
-    # Server-side validation: do not place the order unless all required payment data is present.
-    if method == 'card':
-        card_number = (data.get('card_number') or '').replace(' ', '')
-        card_expiry = (data.get('card_expiry') or '').strip()
-        card_cvv = (data.get('card_cvv') or '').strip()
-        if not card_number or not card_expiry or not card_cvv:
-            return jsonify({'success': False, 'message': 'Please fill in all card details before placing the order.'}), 400
-        if len(card_number) < 12 or not card_number.isdigit():
-            return jsonify({'success': False, 'message': 'Please enter a valid card number.'}), 400
-        if len(card_cvv) < 3 or not card_cvv.isdigit():
-            return jsonify({'success': False, 'message': 'Please enter a valid CVV.'}), 400
-    elif method == 'upi':
-        upi_id = (data.get('upi_id') or '').strip()
-        if not upi_id or '@' not in upi_id:
-            return jsonify({'success': False, 'message': 'Please enter a valid UPI ID before placing the order.'}), 400
-    else:
-        return jsonify({'success': False, 'message': 'Please select a valid payment method.'}), 400
+    if not razorpay_order_id or not razorpay_payment_id or not razorpay_signature:
+        return jsonify({'success': False, 'message': 'Missing payment details.'}), 400
 
-    build.payment_method = method
+    # Make sure this payment belongs to the order we created for this build.
+    if razorpay_order_id != build.razorpay_order_id:
+        return jsonify({'success': False, 'message': 'Order mismatch.'}), 400
+
+    try:
+        razorpay_client.utility.verify_payment_signature({
+            'razorpay_order_id': razorpay_order_id,
+            'razorpay_payment_id': razorpay_payment_id,
+            'razorpay_signature': razorpay_signature
+        })
+    except razorpay.errors.SignatureVerificationError:
+        return jsonify({'success': False, 'message': 'Payment verification failed.'}), 400
+
+    build.payment_method = 'razorpay'
+    build.razorpay_payment_id = razorpay_payment_id
     build.status = 'ordered'
     build.ordered_at = datetime.utcnow()
     delivery = datetime.utcnow() + timedelta(days=7)

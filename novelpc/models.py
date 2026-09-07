@@ -67,7 +67,9 @@ class Build(db.Model):
     extras_price = db.Column(db.Float, default=0.0)      # price added from description/add-ons
     description = db.Column(db.Text, default='')         # custom build notes e.g. RGB wiring, vertical GPU mount
     status = db.Column(db.String(50), default='draft')   # draft, saved, cart, ordered, cancelled
-    payment_method = db.Column(db.String(30), default='') # card / upi
+    payment_method = db.Column(db.String(30), default='') # razorpay
+    razorpay_order_id = db.Column(db.String(64), default='')   # set when a Razorpay order is created
+    razorpay_payment_id = db.Column(db.String(64), default='') # set once payment is verified
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     ordered_at = db.Column(db.DateTime, default=None)     # set when order is confirmed
     delivery_date = db.Column(db.DateTime, default=None)  # set when order is confirmed (created_at + 7 days)

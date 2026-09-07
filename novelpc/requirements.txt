@@ -3,3 +3,5 @@ flask-sqlalchemy
 werkzeug
 gunicorn
 reportlab
+razorpay
+python-dotenv
